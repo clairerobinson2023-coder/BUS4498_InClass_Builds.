@@ -8,26 +8,26 @@ This workflow supports the system goal defined in `my_first_agent/README.md`.
 
 ### 1.2 Workflow Trigger
 
-[Describe the event, request, schedule, or condition that starts the workflow.]
-
+The workflow begins when CPVC organizers request an updated attendance estimate for an upcoming hackathon using the current registration information.
 ### 1.3 Completion Condition at Runtime
 
-[Describe how the system knows, on any given run, that this workflow is completed.]
-
+The workflow is complete when HackTrack provides organizers with an estimated number of attendees and a recommended planning range for food, drinks, and event swag.
 ### 1.4 General Workflow
+HackTrack first reviews the current number of registered participants and available attendance-related information, such as past event attendance rates and voluntary participant confirmations. The system uses this information to estimate how many registered students are likely to attend the hackathon. It then creates a reasonable attendance range that organizers can use when deciding how many supplies to purchase.
 
-[Describe the overall sequence of tasks in one or two paragraphs. Explain the normal path first, followed by the most important exception paths and human-review points.]
+If the available information is incomplete or the estimated attendance is unusually uncertain, HackTrack can request limited additional input from organizers or recommend a brief participant confirmation. The system avoids unnecessary messages and does not use sensitive personal information. If the estimate falls outside expected ranges or there is not enough reliable information to make a useful recommendation, the system flags the result for organizer review before final planning decisions are made.
+
 
 ### 1.5 Workflow Diagram
 
-[Insert a flowchart showing the tasks in sequence. Label each task with a task number and short name. Show decision branches, loops, review points, and possible stopping conditions. Below is an example of a Mermaid. You can either edit the mermaid below yourself or ask ChatGPT to generate a Mermaid script based on your workflow description above. Give every task a unique ID, such as T1, T2, and T3, and name tasks using a verb and an object in the mermaid.]
-
 ```mermaid
 flowchart TD
-    T1["T1: First task"] --> T2["T2: Second task"]
-    T2 --> D1{"Decision condition?"}
-    D1 -->|Yes| T3["T3: Next task"]
-    D1 -->|No| H1["Human review"]
-    H1 --> T3
-    T3 --> C1([C1: Completion state])
+S(["Workflow Trigger: PASTE YOUR COMPLETED WORKFLOW TRIGGER HERE"])
+    T1["HackTrack’s goal is to help cybersecurity students recognize common security vulnerabilities by increasing their average threat-identification accuracy from 65% to 90% through guided practice, while keeping all activities within controlled educational environments."]
+    T2["The workflow begins when CPVC organizers request an updated attendance estimate for an upcoming hackathon using the current registration information."]
+    T3["The workflow is complete when HackTrack provides organizers with an estimated number of attendees and a recommended planning range for food, drinks, and event swag."]
+    T4["HackTrack first reviews the current number of registered participants and available attendance-related information, such as past event attendance rates and voluntary participant confirmations. The system uses this information to estimate how many registered students are likely to attend the hackathon. It then creates a reasonable attendance range that organizers can use when deciding how many supplies to purchase.
+
+If the available information is incomplete or the estimated attendance is unusually uncertain, HackTrack can request limited additional input from organizers or recommend a brief participant confirmation. The system avoids unnecessary messages and does not use sensitive personal information. If the estimate falls outside expected ranges or there is not enough reliable information to make a useful recommendation, the system flags the result for organizer review before final planning decisions are made."]
+    C(["Completion State: S --> T1 --> T2 --> T3 --> T4 --> C"])
 ```
