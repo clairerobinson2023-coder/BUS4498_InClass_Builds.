@@ -22,7 +22,7 @@ If the available information is incomplete or the estimated attendance is unusua
 
 ```mermaid
 flowchart TD
-S(["Workflow Trigger: PASTE YOUR COMPLETED WORKFLOW TRIGGER HERE"])
+S(["Workflow Trigger: The workflow begins when CPVC organizers request an updated attendance estimate for an upcoming hackathon using the current registration information."])
     T1["HackTrack’s goal is to help cybersecurity students recognize common security vulnerabilities by increasing their average threat-identification accuracy from 65% to 90% through guided practice, while keeping all activities within controlled educational environments."]
     T2["The workflow begins when CPVC organizers request an updated attendance estimate for an upcoming hackathon using the current registration information."]
     T3["The workflow is complete when HackTrack provides organizers with an estimated number of attendees and a recommended planning range for food, drinks, and event swag."]
