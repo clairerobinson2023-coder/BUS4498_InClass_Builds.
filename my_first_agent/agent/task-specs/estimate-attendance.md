@@ -1,14 +1,10 @@
-# [Exact task name] Task Specification
-
-*BUS 4498 Team Build Milestone 1. Create one copy for each L3 task. Save it in `our_team_agent/agent/task-specs/` in `BUS4498_Team_Build`. Use the task name in lowercase with hyphens between words; replace `&` with `and` and remove other punctuation.*
-
-*Keep the exact task ID and name from the workflow. Complete all six sections, including Tool Permissions and Boundaries. The reason for assigning L3 belongs only in the team worksheet. Replace prompts and remove template instructions before submitting. Tool scripts are not required.*
+# Estimate Attendance Task Specification
 
 ```yaml
 # BASIC INFORMATION
-task_id: "[Exact workflow task ID]"
-task_name: "[Exact workflow task name]"
-task_owner: "[Person or role accountable for this task]"
+task_id: "T6"
+task_name: "Estimate Attendance"
+task_owner: "Claire"
 
 # Agent Inference Configuration
 Provider: [e.g., Groq, OpenAI, Claude, Google Gemini]
@@ -20,7 +16,7 @@ On inference failure or exhausted limits: Record the unresolved status and hand 
 
 ## 1. Task Goal
 
-- **Objective:** [What business result should this task produce?]
+- **Objective:** Estimate the most likely number of students who will actually attend the hackathon so CPVC organizers can make better decisions about food, drinks, swag, and other event resources.
 
 ## 2. Inbound Inputs
 
@@ -28,30 +24,19 @@ On inference failure or exhausted limits: Record the unresolved status and hand 
 
 ### Input 1
 
-- **Input name:** [Short name.]
-- **What it contains:** [Information the agent receives, including required fields and format.]
-- **Source:** [Task ID and name, person, or other permitted source.]
+- **Input name:** Current Registration Data
+- **What it contains:** The current number of registered participants and any available registration details relevant to attendance planning.
+- **Source:** The earlier workflow task that collects or reviews hackathon registration data.
+
+### Input 2
+
+- **Input name:** Attendance Response Summary
+- **What it contains:** A structured summary of participant attendance responses, such as confirmed, declined, or uncertain statuses, when those responses are available in the workflow.
+- **Source:** The workflow task responsible for collecting or updating attendance responses.
+
 
 ## 3. Tool Permissions and Boundaries
 
-*Name each planned tool and specify its permitted use. Use verb-object names, such as `retrieve_records`, usually matching the task or permitted subtask it supports. Tool name identifies the capability; tool type identifies the proposed implementation. No scripts or working integrations are required.*
-
-### Task-Wide Limits
-
-- **Total task timeout:** [Maximum elapsed time for one task run, with units; include tool calls, retries, and waiting.]
-- **Maximum tool calls:** [Maximum total calls across all tools during one task run; retries count toward this total.]
-
-### Tool 1
-
-- **Tool name:** [Proposed verb-object name, used consistently throughout the project.]
-- **Tool type:** [For example: Python script, pretrained model, API request, database query, or language-model call.]
-- **Supports these permitted subtasks:** [Names from Section 4.]
-- **Allowed use:** [What the tool may read, create, change, or send; identify permitted data sources and destinations.]
-- **Prohibited use:** [Actions, data, or destinations outside this tool's authority.]
-- **Approval required:** [What requires approval, who provides it, and when. Write "None within the allowed use" if applicable.]
-- **Timeout per call:** [Maximum duration of a single attempt, with units.]
-- **Maximum retries per call:** [Nonnegative whole number of additional attempts after the first; 0 means no retries.]
-- **Retry conditions and failure response:** [When a retry is allowed, any waiting interval, and what happens on timeout or exhausted retries. For actions that change state, avoid duplicate actions and hand off if the outcome is uncertain.]
 
 *Copy the Tool block as needed. Tool-specific and task-wide limits both apply; stop at whichever is reached first. Naming a tool does not authorize uses outside its stated permissions.*
 
@@ -61,18 +46,18 @@ On inference failure or exhausted limits: Record the unresolved status and hand 
 
 ### Permitted Subtask 1
 
-- **Subtask name:** [Use a verb-object name.]
-- **Subtask description:** [What information does it examine and what finding or intermediate result does it produce?]
-- **Subtask boundary:** [What may and may not be done, including prerequisites and required approval?]
-- **Retry limits:** [Maximum additional attempts after the initial attempt; 0 means no retries. Repetition must also stay within Section 3's limits.]
+- **Subtask name:** Review registration signals
+- **Subtask description:** Examine the available registration and attendance-response information to identify patterns that may affect expected turnout, such as how many participants are confirmed, declined, or uncertain.
+- **Subtask boundary:** May only use registration and response information already provided by the workflow; may not contact participants, change registration records, or create missing data.
+- **Retry limits:** 1 additional attempt if the available information is incomplete or inconsistent.
 
 - **Decision guidance:** After each subtask, use its findings to select the permitted subtask most likely to resolve the most important remaining uncertainty. Do not follow a fixed sequence. If no permitted subtask can make useful progress, stop and hand the case to a person.
 
 ## 5. When to Stop or Hand Off to a Human
 
-- **Stop successfully when:** [What evidence shows that the required result is complete and acceptable? Confidence alone is not enough.]
-- **Hand off early when:** [What missing evidence, lack of progress, failure, or out-of-scope finding requires human review?]
-- **Hand off to:** [Specific person, role, or review queue.]
+- **Stop successfully when:** The task has produced a final attendance estimate supported by the available registration information, attendance-response data, and any historical attendance evidence provided to the workflow, with the main factors affecting the estimate and any remaining uncertainty clearly documented.
+- **Hand off early when:** Required input data is missing, conflicting, or too incomplete to support a reasonable estimate; repeated attempts do not resolve inconsistencies; or the task encounters a situation outside its permitted scope, such as needing to contact participants, change registration records, or make purchasing decisions.
+- **Hand off to:** CPVC event organizer or designated hackathon planning lead responsible for attendance and event-resource decisions.
 
 Stop at the first applicable budget limit or handoff condition. While awaiting review, take no further autonomous action.
 
