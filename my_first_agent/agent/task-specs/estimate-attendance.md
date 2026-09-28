@@ -7,11 +7,11 @@ task_name: "Estimate Attendance"
 task_owner: "Claire"
 
 # Agent Inference Configuration
-Provider: [e.g., Groq, OpenAI, Claude, Google Gemini]
-Model: "[Exact supported API model ID.]"
-Role: [permitted subtasks the model supports]
-Maximum inference requests per task run: "[Whole-number limit.]"
-On inference failure or exhausted limits: Record the unresolved status and hand the case to [human role].
+Provider: Groq
+Model: "openai/gpt-oss-120b"
+Role: Review registration signals, compare historical attendance patterns, adjust the attendance estimate based on available evidence, assess uncertainty, and produce a supported attendance estimate.
+Maximum inference requests per task run: 6
+On inference failure or exhausted limits: Record the unresolved attendance-estimate status and hand the case to the CPVC event organizer or designated hackathon planning lead.
 ```
 
 ## 1. Task Goal
@@ -37,10 +37,51 @@ On inference failure or exhausted limits: Record the unresolved status and hand 
 
 ## 3. Tool Permissions and Boundaries
 
+*The tools below support T6 — Estimate Attendance. They may only use the registration, confirmation, and historical attendance information supplied to or authorized for this task.*
 
-*Copy the Tool block as needed. Tool-specific and task-wide limits both apply; stop at whichever is reached first. Naming a tool does not authorize uses outside its stated permissions.*
+### Task-Wide Limits
 
+- **Total task timeout:** 2 minutes for one task run, including inference requests, tool calls, retries, and waiting.
+- **Maximum tool calls:** 6 total calls across all tools during one task run; retries count toward this total.
 
+### Tool 1
+
+- **Tool name:** `retrieve_registration_summary`
+- **Input:** structured registration summary
+- **Output:** validated registration signals
+- **Implementation Route:** database query
+- **Integration approach:** direct integration
+- **Role in this task:** Support reviewing current registration signals before estimating attendance.
+- **Task timeout:** 20 seconds
+- **Maximum retries:** 1
+- **Retry only when:** The registration summary cannot be retrieved because of a temporary connection or read error. Retry once after a short delay. Do not retry when the required data is missing or incomplete.
+- **On timeout, exhausted retries, or an error that cannot be retried:** Record that current registration evidence could not be validated and hand the case to the CPVC event organizer or designated hackathon planning lead.
+
+### Tool 2
+
+- **Tool name:** `retrieve_attendance_history`
+- **Input:** historical registration/attendance summary
+- **Output:** historical attendance comparison
+- **Implementation Route:** database query
+- **Integration approach:** direct integration
+- **Role in this task:** Support comparison of current registration signals with previous registration-to-attendance patterns.
+- **Task timeout:** 20 seconds
+- **Maximum retries:** 0
+- **Retry only when:** Not applicable
+- **On timeout, exhausted retries, or an error that cannot be retried:** Record that historical attendance evidence is unavailable and continue only if the remaining evidence is sufficient to support an estimate; otherwise hand the case to the CPVC event organizer or designated hackathon planning lead.
+
+### Tool 3
+
+- **Tool name:** `record_attendance_estimate`
+- **Input:** supported attendance estimate, supporting factors, and uncertainty
+- **Output:** recorded attendance-estimate result
+- **Implementation Route:** file operations
+- **Integration approach:** direct integration
+- **Role in this task:** Record the completed attendance estimate and the evidence and uncertainty that support it for use by the next workflow task.
+- **Task timeout:** 20 seconds
+- **Maximum retries:** 1
+- **Retry only when:** A temporary write error occurs and there is clear evidence that the first attempt did not save the result. Do not retry when it is uncertain whether the first write succeeded, to avoid duplicate records.
+- **On timeout, exhausted retries, or an error that cannot be retried:** Record the unsaved-result status when possible and hand the case to the CPVC event organizer or designated hackathon planning lead. Do not report the estimate as successfully recorded.
 
 ## 4. How the Agent Should Reason
 
