@@ -6,6 +6,7 @@
   const publishableKey = config.publishableKey || "";
   const agentUrl = `${supabaseUrl}/functions/v1/submit-event`;
   const eventColumns = "id, created_at, status, title, club, event_date, start_time, end_time, place_name, place_detail, cost, free_food, summary, flyer_url";
+  const moderatorColumns = "id, created_at, status, status_reason, announcement, title, club, event_date, start_time, end_time, place_name, place_detail, cost, free_food, summary, flyer_url";
   const maxFlyerBytes = 5 * 1024 * 1024;
   const allowedFlyerTypes = new Set(["image/jpeg", "image/png"]);
   const supabaseClient = window.supabase && supabaseUrl && publishableKey
@@ -25,9 +26,23 @@
   const refreshButton = document.getElementById("refresh-button");
   const allEventsFilter = document.getElementById("all-events-filter");
   const freeFoodFilter = document.getElementById("free-food-filter");
+  const moderatorPanel = document.getElementById("moderator-panel");
+  const moderatorSignedOut = document.getElementById("moderator-signed-out");
+  const moderatorSignedIn = document.getElementById("moderator-signed-in");
+  const signInForm = document.getElementById("sign-in-form");
+  const moderatorEmail = document.getElementById("moderator-email");
+  const moderatorPassword = document.getElementById("moderator-password");
+  const signInButton = document.getElementById("sign-in-button");
+  const signOutButton = document.getElementById("sign-out-button");
+  const moderatorStatus = document.getElementById("moderator-status");
+  const waitingStatus = document.getElementById("waiting-status");
+  const waitingBoard = document.getElementById("waiting-board");
+  const moderatorResult = document.getElementById("moderator-result");
+  const moderatorResultMessage = document.getElementById("moderator-result-message");
 
   let events = [];
   let freeFoodOnly = false;
+  let currentUser = null;
 
   const statusLabels = {
     published: "Posted",
@@ -106,7 +121,7 @@
     }
   }
 
-  function makeEventCard(event) {
+  function makeEventCard(event, includeReview) {
     const item = document.createElement("li");
     item.className = "event";
 
@@ -148,6 +163,30 @@
       flyer.decoding = "async";
       item.appendChild(flyer);
     }
+
+    if (includeReview) {
+      const review = document.createElement("div");
+      review.className = "review";
+
+      review.appendChild(makeTextElement("p", "why", event.status_reason || "This post needs moderator review."));
+      review.appendChild(makeTextElement("p", "original", `Original post: ${event.announcement || "(No original announcement saved.)"}`));
+
+      const actions = document.createElement("p");
+      actions.className = "actions";
+      const approveButton = document.createElement("button");
+      approveButton.type = "button";
+      approveButton.textContent = "Approve";
+      approveButton.addEventListener("click", function () { reviewEvent(event.id, "published"); });
+      const rejectButton = document.createElement("button");
+      rejectButton.type = "button";
+      rejectButton.className = "ghost";
+      rejectButton.textContent = "Reject";
+      rejectButton.addEventListener("click", function () { reviewEvent(event.id, "rejected"); });
+      actions.appendChild(approveButton);
+      actions.appendChild(rejectButton);
+      review.appendChild(actions);
+      item.appendChild(review);
+    }
     return item;
   }
 
@@ -160,7 +199,7 @@
       return;
     }
 
-    visibleEvents.forEach((event) => eventBoard.appendChild(makeEventCard(event)));
+    visibleEvents.forEach((event) => eventBoard.appendChild(makeEventCard(event, false)));
   }
 
   function setFilter(nextFreeFoodOnly) {
@@ -201,6 +240,156 @@
     events = Array.isArray(response.data) ? response.data : [];
     boardStatus.textContent = events.length === 1 ? "1 event" : `${events.length} events`;
     renderEvents();
+  }
+
+  function setModeratorResult(status, message) {
+    moderatorResult.className = `result ${status}`;
+    moderatorResult.hidden = false;
+    moderatorResultMessage.textContent = message || "";
+  }
+
+  function clearModeratorResult() {
+    moderatorResult.hidden = true;
+    moderatorResultMessage.textContent = "";
+  }
+
+  async function loadWaitingEvents() {
+    if (!supabaseClient || !currentUser) return;
+
+    waitingStatus.textContent = "Loading waiting posts…";
+    let response;
+    try {
+      response = await supabaseClient
+        .from("events")
+        .select(moderatorColumns)
+        .eq("status", "waiting")
+        .order("created_at", { ascending: false });
+    } catch (error) {
+      waitingStatus.textContent = "We couldn't load waiting posts.";
+      waitingBoard.replaceChildren(makeTextElement("li", "empty", "Try again, or check the Supabase connection."));
+      return;
+    }
+
+    if (response.error) {
+      waitingStatus.textContent = "We couldn't load waiting posts.";
+      waitingBoard.replaceChildren(makeTextElement("li", "empty", "Try again, or check the Supabase connection."));
+      return;
+    }
+
+    const waitingEvents = Array.isArray(response.data) ? response.data : [];
+    waitingStatus.textContent = waitingEvents.length === 1 ? "1 post waiting" : `${waitingEvents.length} posts waiting`;
+    waitingBoard.replaceChildren();
+    if (waitingEvents.length === 0) {
+      waitingBoard.appendChild(makeTextElement("li", "empty", "No posts are waiting for review."));
+      return;
+    }
+    waitingEvents.forEach((event) => waitingBoard.appendChild(makeEventCard(event, true)));
+  }
+
+  async function setModeratorUser(user) {
+    currentUser = user;
+    const signedIn = Boolean(user);
+    moderatorSignedOut.hidden = signedIn;
+    moderatorSignedIn.hidden = !signedIn;
+
+    if (!signedIn) {
+      moderatorStatus.textContent = "";
+      waitingStatus.textContent = "Sign in to see waiting posts.";
+      waitingBoard.replaceChildren();
+      return;
+    }
+
+    moderatorStatus.textContent = `Signed in as ${user.email || "moderator"}.`;
+    clearModeratorResult();
+    await loadWaitingEvents();
+  }
+
+  async function signIn(event) {
+    event.preventDefault();
+    if (!supabaseClient) {
+      setModeratorResult("error", "The Supabase connection is not configured.");
+      return;
+    }
+
+    signInButton.disabled = true;
+    signInButton.textContent = "Signing in…";
+    clearModeratorResult();
+    try {
+      const response = await supabaseClient.auth.signInWithPassword({
+        email: moderatorEmail.value.trim(),
+        password: moderatorPassword.value,
+      });
+
+      if (response.error) {
+        setModeratorResult("error", "Sign-in failed. Check the email and password.");
+      } else {
+        moderatorPanel.open = true;
+        moderatorPassword.value = "";
+      }
+    } catch (error) {
+      setModeratorResult("error", "Sign-in failed. Check your connection and try again.");
+    } finally {
+      signInButton.disabled = false;
+      signInButton.textContent = "Sign in";
+    }
+  }
+
+  async function signOut() {
+    if (!supabaseClient) return;
+    signOutButton.disabled = true;
+    try {
+      const response = await supabaseClient.auth.signOut();
+      if (response.error) setModeratorResult("error", "Sign-out failed. Try again.");
+    } catch (error) {
+      setModeratorResult("error", "Sign-out failed. Check your connection and try again.");
+    } finally {
+      signOutButton.disabled = false;
+    }
+  }
+
+  async function reviewEvent(eventId, nextStatus) {
+    if (!supabaseClient || !currentUser) return;
+
+    const action = nextStatus === "published" ? "approve" : "reject";
+    setModeratorResult("waiting", `${action === "approve" ? "Approving" : "Rejecting"} post…`);
+    const response = await supabaseClient
+      .from("events")
+      .update({
+        status: nextStatus,
+        status_reason: nextStatus === "published" ? "Approved by moderator." : "Rejected by moderator.",
+        reviewed_at: new Date().toISOString(),
+        reviewed_by: currentUser.id,
+      })
+      .eq("id", eventId);
+
+    if (response.error) {
+      setModeratorResult("error", "That review could not be saved. Try again.");
+      return;
+    }
+
+    setModeratorResult("published", nextStatus === "published" ? "The post is now published." : "The post was rejected.");
+    await Promise.all([loadWaitingEvents(), loadEvents()]);
+  }
+
+  async function initAuth() {
+    if (!supabaseClient) {
+      setModeratorResult("error", "The Supabase connection is not configured.");
+      return;
+    }
+
+    let sessionResponse;
+    try {
+      sessionResponse = await supabaseClient.auth.getSession();
+    } catch (error) {
+      setModeratorResult("error", "The sign-in service could not be reached.");
+      return;
+    }
+    await setModeratorUser(sessionResponse.data.session ? sessionResponse.data.session.user : null);
+    supabaseClient.auth.onAuthStateChange(function (_event, session) {
+      window.setTimeout(function () {
+        setModeratorUser(session ? session.user : null);
+      }, 0);
+    });
   }
 
   async function submitAnnouncement(event) {
@@ -256,5 +445,8 @@
   refreshButton.addEventListener("click", loadEvents);
   allEventsFilter.addEventListener("click", function () { setFilter(false); });
   freeFoodFilter.addEventListener("click", function () { setFilter(true); });
+  signInForm.addEventListener("submit", signIn);
+  signOutButton.addEventListener("click", signOut);
   loadEvents();
+  initAuth();
 })();
