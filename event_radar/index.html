@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Find upcoming events from campus clubs.">
+  <title>Club Event Radar</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <p class="kicker">Campus clubs · upcoming events</p>
+      <h1>Club Event Radar</h1>
+      <p class="lede">One place to find what campus clubs are hosting next—and share an event in a few sentences.</p>
+      <ul class="badges" aria-label="Website features">
+        <li>AI-assisted event cards</li>
+        <li>Campus places only</li>
+        <li>Moderator review when needed</li>
+      </ul>
+    </div>
+  </header>
+
+  <main class="wrap layout">
+    <section class="card post" aria-labelledby="post-heading">
+      <h2 id="post-heading">Post an event</h2>
+      <p class="muted">Paste the announcement as you received it. The event agent will organize the details.</p>
+      <form id="post-form">
+        <label for="announcement">
+          Announcement
+          <span class="hint">1–2000 characters. Include the date, start time, and place if you know them.</span>
+        </label>
+        <textarea id="announcement" name="announcement" maxlength="2000" required placeholder="Board Game Guild: Game Night! Thursday, October 29, 7 to 10 pm in the University Union, Room 220..."></textarea>
+        <button type="submit" id="submit-button">Post announcement</button>
+      </form>
+
+      <div id="result" class="result published" hidden aria-live="polite">
+        <p id="result-label" class="result-label"></p>
+        <p id="result-message"></p>
+        <ul id="result-reasons" class="reasons"></ul>
+      </div>
+    </section>
+
+    <section class="board-section" aria-labelledby="board-heading">
+      <div class="board-head">
+        <div>
+          <h2 id="board-heading">Upcoming events</h2>
+          <p id="board-status" class="muted" aria-live="polite">Loading events…</p>
+        </div>
+        <button type="button" class="ghost" id="refresh-button">Refresh</button>
+      </div>
+      <div class="filters" aria-label="Event filters">
+        <button type="button" class="chip" id="all-events-filter" aria-pressed="true">All events</button>
+        <button type="button" class="chip" id="free-food-filter" aria-pressed="false">Free food</button>
+      </div>
+      <ul class="board" id="event-board" aria-live="polite"></ul>
+    </section>
+  </main>
+
+  <footer class="wrap foot">
+    <p>Club Event Radar · BUS 4498 practice build</p>
+  </footer>
+
+  <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js"></script>
+  <script defer src="config.js"></script>
+  <script defer src="app.js"></script>
+</body>
+</html>
