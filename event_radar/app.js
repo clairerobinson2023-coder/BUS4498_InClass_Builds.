@@ -5,13 +5,16 @@
   const supabaseUrl = config.supabaseUrl || "";
   const publishableKey = config.publishableKey || "";
   const agentUrl = `${supabaseUrl}/functions/v1/submit-event`;
-  const eventColumns = "id, created_at, status, title, club, event_date, start_time, end_time, place_name, place_detail, cost, free_food, summary";
+  const eventColumns = "id, created_at, status, title, club, event_date, start_time, end_time, place_name, place_detail, cost, free_food, summary, flyer_url";
+  const maxFlyerBytes = 5 * 1024 * 1024;
+  const allowedFlyerTypes = new Set(["image/jpeg", "image/png"]);
   const supabaseClient = window.supabase && supabaseUrl && publishableKey
     ? window.supabase.createClient(supabaseUrl, publishableKey)
     : null;
 
   const form = document.getElementById("post-form");
   const announcementInput = document.getElementById("announcement");
+  const flyerInput = document.getElementById("flyer");
   const submitButton = document.getElementById("submit-button");
   const result = document.getElementById("result");
   const resultLabel = document.getElementById("result-label");
@@ -90,6 +93,19 @@
     return makeTextElement("span", `tag${className ? ` ${className}` : ""}`, text);
   }
 
+  function safeFlyerUrl(value) {
+    if (!value || !supabaseUrl) return "";
+    try {
+      const flyerUrl = new URL(value);
+      const projectUrl = new URL(supabaseUrl);
+      const flyersPath = "/storage/v1/object/public/flyers/";
+      if (flyerUrl.origin !== projectUrl.origin || !flyerUrl.pathname.startsWith(flyersPath)) return "";
+      return flyerUrl.href;
+    } catch (error) {
+      return "";
+    }
+  }
+
   function makeEventCard(event) {
     const item = document.createElement("li");
     item.className = "event";
@@ -122,6 +138,16 @@
     if (tags.childNodes.length > 0) body.appendChild(tags);
 
     item.appendChild(body);
+    const flyerUrl = safeFlyerUrl(event.flyer_url);
+    if (flyerUrl) {
+      const flyer = document.createElement("img");
+      flyer.className = "flyer";
+      flyer.src = flyerUrl;
+      flyer.alt = `${event.title || "Event"} flyer`;
+      flyer.loading = "lazy";
+      flyer.decoding = "async";
+      item.appendChild(flyer);
+    }
     return item;
   }
 
@@ -180,9 +206,20 @@
   async function submitAnnouncement(event) {
     event.preventDefault();
     const announcement = announcementInput.value.trim();
+    const flyer = flyerInput.files && flyerInput.files[0];
     if (!announcement) {
       setResult("error", "Add an announcement before posting.", []);
       announcementInput.focus();
+      return;
+    }
+    if (flyer && !allowedFlyerTypes.has(flyer.type)) {
+      setResult("error", "The flyer must be a JPG or PNG image.", []);
+      flyerInput.focus();
+      return;
+    }
+    if (flyer && flyer.size > maxFlyerBytes) {
+      setResult("error", "The flyer must be 5 MB or smaller.", []);
+      flyerInput.focus();
       return;
     }
 
@@ -191,6 +228,7 @@
 
     const formData = new FormData();
     formData.append("announcement", announcement);
+    if (flyer) formData.append("flyer", flyer);
 
     try {
       const response = await fetch(agentUrl, {
@@ -203,6 +241,7 @@
       setResult(status, body.message || "The agent did not return a message.", body.reasons);
       if (body.ok && body.status === "published") {
         announcementInput.value = "";
+        flyerInput.value = "";
         await loadEvents();
       }
     } catch (error) {
