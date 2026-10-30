@@ -1,452 +1,390 @@
+// Club Event Radar: the website. It runs in each visitor's browser (GitHub Pages only serves it).
+// It reads published events from the database, refreshes itself every few seconds, and sends new posts
+// to the AI agent. It knows only the project address and the publishable key, so it can do only what
+// the security rules allow.
 (function () {
   "use strict";
+  var cfg = window.EVENT_RADAR_CONFIG || {};
+  var $ = function (id) { return document.getElementById(id); };
+  var qa = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
 
-  const config = window.EVENT_RADAR_CONFIG || {};
-  const supabaseUrl = config.supabaseUrl || "";
-  const publishableKey = config.publishableKey || "";
-  const agentUrl = `${supabaseUrl}/functions/v1/submit-event`;
-  const eventColumns = "id, created_at, status, title, club, event_date, start_time, end_time, place_name, place_detail, cost, free_food, summary, flyer_url";
-  const moderatorColumns = "id, created_at, status, status_reason, announcement, title, club, event_date, start_time, end_time, place_name, place_detail, cost, free_food, summary, flyer_url";
-  const maxFlyerBytes = 5 * 1024 * 1024;
-  const allowedFlyerTypes = new Set(["image/jpeg", "image/png"]);
-  const supabaseClient = window.supabase && supabaseUrl && publishableKey
-    ? window.supabase.createClient(supabaseUrl, publishableKey)
-    : null;
+  if (!cfg.supabaseUrl || /YOUR-PROJECT-REF/.test(cfg.supabaseUrl) || !cfg.publishableKey || /YOUR-KEY/.test(cfg.publishableKey)) {
+    $("boardStatus").textContent = "Add your Project URL and publishable key to config.js first.";
+    return;
+  }
+  if (/^sb_secret_/.test(cfg.publishableKey)) {
+    $("boardStatus").textContent = "Stop: config.js holds the secret key. Replace it with the publishable key, then create a new secret key in Supabase.";
+    return;
+  }
 
-  const form = document.getElementById("post-form");
-  const announcementInput = document.getElementById("announcement");
-  const flyerInput = document.getElementById("flyer");
-  const submitButton = document.getElementById("submit-button");
-  const result = document.getElementById("result");
-  const resultLabel = document.getElementById("result-label");
-  const resultMessage = document.getElementById("result-message");
-  const resultReasons = document.getElementById("result-reasons");
-  const eventBoard = document.getElementById("event-board");
-  const boardStatus = document.getElementById("board-status");
-  const refreshButton = document.getElementById("refresh-button");
-  const allEventsFilter = document.getElementById("all-events-filter");
-  const freeFoodFilter = document.getElementById("free-food-filter");
-  const moderatorPanel = document.getElementById("moderator-panel");
-  const moderatorSignedOut = document.getElementById("moderator-signed-out");
-  const moderatorSignedIn = document.getElementById("moderator-signed-in");
-  const signInForm = document.getElementById("sign-in-form");
-  const moderatorEmail = document.getElementById("moderator-email");
-  const moderatorPassword = document.getElementById("moderator-password");
-  const signInButton = document.getElementById("sign-in-button");
-  const signOutButton = document.getElementById("sign-out-button");
-  const moderatorStatus = document.getElementById("moderator-status");
-  const waitingStatus = document.getElementById("waiting-status");
-  const waitingBoard = document.getElementById("waiting-board");
-  const moderatorResult = document.getElementById("moderator-result");
-  const moderatorResultMessage = document.getElementById("moderator-result-message");
+  var baseUrl = cfg.supabaseUrl.replace(/\/+$/, "");
+  var db = window.supabase.createClient(baseUrl, cfg.publishableKey);
+  var AGENT_URL = baseUrl + "/functions/v1/submit-event";
+  var REFRESH_MS = 15000; // the board checks for new posts this often while the tab is open
+  // The website may read only these columns (the menu), never the raw announcement or moderator notes.
+  var PUBLIC_COLUMNS = [
+    "id", "created_at", "title", "club", "event_date", "start_time", "end_time", "place_name", "place_detail", "cost", "free_food", "summary",
+    "flyer_url",
+  ].join(",");
 
-  let events = [];
-  let freeFoodOnly = false;
-  let currentUser = null;
+  /* ---------- small helpers ---------- */
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text; // always textContent: posts are typed by strangers
+    return e;
+  }
+  function parseDate(d) { var p = d.split("-"); return new Date(+p[0], +p[1] - 1, +p[2]); }
+  function fmtDate(d) { return d ? parseDate(d).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }) : "Date to be announced"; }
+  function fmtDayHead(d) { return d ? parseDate(d).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }) : "Date to be announced"; }
+  function fmtTime(t) {
+    if (!t) return "";
+    var p = t.split(":"), h = +p[0], ap = h >= 12 ? "PM" : "AM";
+    return (h % 12 || 12) + ":" + p[1] + " " + ap;
+  }
+  function today() { var t = new Date(); return new Date(t.getFullYear(), t.getMonth(), t.getDate()); }
+  function isThisWeek(d) { if (!d) return false; var diff = (parseDate(d) - today()) / 86400000; return diff >= 0 && diff < 7; }
+  function isRecent(iso) { return iso && (Date.now() - Date.parse(iso)) < 5 * 60 * 1000; }
+  var toastTimer = null;
+  function toast(msg) {
+    var t = $("toast"); t.textContent = msg; t.className = "toast show";
+    clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.className = "toast"; }, 2400);
+  }
+  // What the agent looked at before it decided: the club list, the club's earlier posts, the lessons.
+  function memo(lines) {
+    if (!lines || !lines.length) return null;
+    var box = el("div", "memo");
+    box.appendChild(el("p", "memo-title", "What the agent looked at"));
+    var ul = el("ul");
+    lines.forEach(function (l) { ul.appendChild(el("li", null, l)); });
+    box.appendChild(ul);
+    return box;
+  }
 
-  const statusLabels = {
-    published: "Posted",
-    waiting: "Waiting for review",
-    rejected: "Not posted",
-    duplicate: "Already posted",
-    error: "Something went wrong",
-  };
+  /* ---------- drawers: the menu's add-ons slide in from the right ---------- */
+  var openId = null;
+  function openDrawer(id) {
+    closeDrawer();
+    var d = $(id); if (!d) return;
+    d.hidden = false; $("scrim").hidden = false; openId = id;
+    var first = d.querySelector("textarea, input:not([type=hidden])"); if (first) first.focus();
+  }
+  function closeDrawer() {
+    if (!openId) return;
+    $(openId).hidden = true; $("scrim").hidden = true; openId = null;
+  }
+  $("openPost").addEventListener("click", function () { openDrawer("postDrawer"); });
+  $("scrim").addEventListener("click", closeDrawer);
+  qa("[data-close]").forEach(function (b) { b.addEventListener("click", closeDrawer); });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeDrawer(); });
 
-  function setResult(status, message, reasons) {
-    result.className = `result ${status}`;
-    result.hidden = false;
-    resultLabel.textContent = statusLabels[status] || statusLabels.error;
-    resultMessage.textContent = message || "";
-    resultReasons.replaceChildren();
+  /* ---------- one event card: date badge, details, and (from Stage 7) the flyer ---------- */
+  function dateBadge(d) {
+    var box = el("div", "date");
+    if (!d) { box.className = "date tba"; box.appendChild(el("span", "day-num", "TBA")); return box; }
+    var day = parseDate(d);
+    box.appendChild(el("span", "mon", day.toLocaleDateString("en-US", { month: "short" })));
+    box.appendChild(el("span", "day-num", String(day.getDate())));
+    return box;
+  }
+  function card(ev, extra) {
+    var li = el("article", "event");
+    li.appendChild(dateBadge(ev.event_date));
+    var body = el("div", "event-body");
+    var time = ev.start_time ? fmtTime(ev.start_time) + (ev.end_time ? " to " + fmtTime(ev.end_time) : "") : "Time to be announced";
+    body.appendChild(el("p", "when", fmtDate(ev.event_date) + " · " + time));
+    body.appendChild(el("h3", null, ev.title || "Untitled event"));
+    var where = [ev.place_name, ev.place_detail].filter(Boolean).join(", ");
+    var meta = [ev.club, where].filter(Boolean).join(" · ");
+    if (meta) body.appendChild(el("p", "meta", meta));
+    if (ev.summary) body.appendChild(el("p", "summary", ev.summary));
+    var tags = el("p", "tags");
+    if (ev.cost) tags.appendChild(el("span", "tag", ev.cost));
+    if (ev.free_food) tags.appendChild(el("span", "tag food", "🍕 Free food"));
+    if (ev.place_name === "Online") tags.appendChild(el("span", "tag", "💻 Online"));
+    if (tags.childNodes.length) body.appendChild(tags);
+    if (extra) body.appendChild(extra);
+    li.appendChild(body);
+    if (ev.flyer_url && ev.flyer_url.indexOf(baseUrl + "/storage/v1/object/public/flyers/") === 0) {
+      var img = el("img", "flyer");
+      img.src = ev.flyer_url;
+      img.alt = "Flyer for " + (ev.title || "this event");
+      img.loading = "lazy";
+      li.appendChild(img);
+    }
+    return li;
+  }
 
-    (Array.isArray(reasons) ? reasons : []).forEach(function (reason) {
-      const item = document.createElement("li");
-      item.textContent = reason;
-      resultReasons.appendChild(item);
+  /* ---------- the board: published events, grouped by day, refreshed by itself ---------- */
+  var events = [], filter = "all", seen = null;
+  function visible() {
+    return events.filter(function (ev) {
+      if (filter === "week") return isThisWeek(ev.event_date);
+      if (filter === "food") return ev.free_food;
+      if (filter === "online") return ev.place_name === "Online";
+      return true;
     });
   }
-
-  function formatDateParts(dateString) {
-    if (!dateString) return null;
-    const parts = dateString.split("-").map(Number);
-    if (parts.length !== 3 || parts.some(Number.isNaN)) return null;
-    const date = new Date(parts[0], parts[1] - 1, parts[2], 12);
-    if (Number.isNaN(date.getTime())) return null;
-    return {
-      month: new Intl.DateTimeFormat("en-US", { month: "short" }).format(date),
-      day: String(parts[2]),
-      weekday: new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(date),
-      monthLong: new Intl.DateTimeFormat("en-US", { month: "short" }).format(date),
-    };
-  }
-
-  function formatTime(timeString) {
-    if (!timeString) return "";
-    const match = /^([01]\d|2[0-3]):([0-5]\d)/.exec(timeString);
-    if (!match) return timeString;
-    const date = new Date(1970, 0, 1, Number(match[1]), Number(match[2]));
-    return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(date);
-  }
-
-  function formatWhen(event, dateParts) {
-    if (!dateParts) return "Date and time to be announced";
-    const start = formatTime(event.start_time);
-    const end = formatTime(event.end_time);
-    let time = start || "Time to be announced";
-    if (start && end) time += ` to ${end}`;
-    return `${dateParts.weekday}, ${dateParts.monthLong} ${dateParts.day} · ${time}`;
-  }
-
-  function makeTextElement(tagName, className, text) {
-    const element = document.createElement(tagName);
-    if (className) element.className = className;
-    element.textContent = text || "";
-    return element;
-  }
-
-  function makeTag(text, className) {
-    return makeTextElement("span", `tag${className ? ` ${className}` : ""}`, text);
-  }
-
-  function safeFlyerUrl(value) {
-    if (!value || !supabaseUrl) return "";
-    try {
-      const flyerUrl = new URL(value);
-      const projectUrl = new URL(supabaseUrl);
-      const flyersPath = "/storage/v1/object/public/flyers/";
-      if (flyerUrl.origin !== projectUrl.origin || !flyerUrl.pathname.startsWith(flyersPath)) return "";
-      return flyerUrl.href;
-    } catch (error) {
-      return "";
+  function renderBoard() {
+    var list = $("board"), shown = visible(), i = 0;
+    list.textContent = "";
+    if (!shown.length) {
+      var empty = el("div", "empty");
+      empty.appendChild(el("b", null, events.length ? "Nothing matches this filter." : "No events yet."));
+      empty.appendChild(el("span", null, events.length ? "Try another filter." : "Post one in the club chat, and it shows up here."));
+      list.appendChild(empty);
     }
-  }
-
-  function makeEventCard(event, includeReview) {
-    const item = document.createElement("li");
-    item.className = "event";
-
-    const dateParts = formatDateParts(event.event_date);
-    const date = document.createElement("div");
-    date.className = dateParts ? "date" : "date tba";
-    if (dateParts) {
-      date.appendChild(makeTextElement("span", "mon", dateParts.month));
-      date.appendChild(makeTextElement("span", "day", dateParts.day));
-    } else {
-      date.appendChild(makeTextElement("span", "day", "TBA"));
-    }
-    item.appendChild(date);
-
-    const body = document.createElement("div");
-    body.className = "event-body";
-    body.appendChild(makeTextElement("p", "when", formatWhen(event, dateParts)));
-    body.appendChild(makeTextElement("h3", "", event.title || "Untitled event"));
-
-    const metaParts = [event.club, event.place_name].filter(Boolean);
-    if (event.place_detail) metaParts.push(event.place_detail);
-    body.appendChild(makeTextElement("p", "meta", metaParts.join(" · ") || "Details to be announced"));
-    body.appendChild(makeTextElement("p", "summary", event.summary || "No summary provided."));
-
-    const tags = document.createElement("p");
-    tags.className = "tags";
-    if (event.cost && event.cost.toLowerCase().includes("free")) tags.appendChild(makeTag("Free"));
-    if (event.free_food) tags.appendChild(makeTag("🍕 Free food", "food"));
-    if (tags.childNodes.length > 0) body.appendChild(tags);
-
-    item.appendChild(body);
-    const flyerUrl = safeFlyerUrl(event.flyer_url);
-    if (flyerUrl) {
-      const flyer = document.createElement("img");
-      flyer.className = "flyer";
-      flyer.src = flyerUrl;
-      flyer.alt = `${event.title || "Event"} flyer`;
-      flyer.loading = "lazy";
-      flyer.decoding = "async";
-      item.appendChild(flyer);
-    }
-
-    if (includeReview) {
-      const review = document.createElement("div");
-      review.className = "review";
-
-      review.appendChild(makeTextElement("p", "why", event.status_reason || "This post needs moderator review."));
-      review.appendChild(makeTextElement("p", "original", `Original post: ${event.announcement || "(No original announcement saved.)"}`));
-
-      const actions = document.createElement("p");
-      actions.className = "actions";
-      const approveButton = document.createElement("button");
-      approveButton.type = "button";
-      approveButton.textContent = "Approve";
-      approveButton.addEventListener("click", function () { reviewEvent(event.id, "published"); });
-      const rejectButton = document.createElement("button");
-      rejectButton.type = "button";
-      rejectButton.className = "ghost";
-      rejectButton.textContent = "Reject";
-      rejectButton.addEventListener("click", function () { reviewEvent(event.id, "rejected"); });
-      actions.appendChild(approveButton);
-      actions.appendChild(rejectButton);
-      review.appendChild(actions);
-      item.appendChild(review);
-    }
-    return item;
-  }
-
-  function renderEvents() {
-    eventBoard.replaceChildren();
-    const visibleEvents = freeFoodOnly ? events.filter((event) => event.free_food) : events;
-
-    if (visibleEvents.length === 0) {
-      eventBoard.appendChild(makeTextElement("li", "empty", freeFoodOnly ? "No free-food events yet." : "No events yet. Post the first one!"));
-      return;
-    }
-
-    visibleEvents.forEach((event) => eventBoard.appendChild(makeEventCard(event, false)));
-  }
-
-  function setFilter(nextFreeFoodOnly) {
-    freeFoodOnly = nextFreeFoodOnly;
-    allEventsFilter.setAttribute("aria-pressed", String(!freeFoodOnly));
-    freeFoodFilter.setAttribute("aria-pressed", String(freeFoodOnly));
-    renderEvents();
-  }
-
-  async function loadEvents() {
-    if (!supabaseClient) {
-      boardStatus.textContent = "The Supabase connection is not configured.";
-      eventBoard.replaceChildren(makeTextElement("li", "empty", "Events are unavailable until the Supabase connection is configured."));
-      return;
-    }
-
-    boardStatus.textContent = "Loading events…";
-    let response;
-    try {
-      response = await supabaseClient
-        .from("events")
-        .select(eventColumns)
-        .eq("status", "published")
-        .order("event_date", { ascending: true, nullsFirst: false })
-        .order("start_time", { ascending: true, nullsFirst: false });
-    } catch (error) {
-      boardStatus.textContent = "We couldn't load the event board.";
-      eventBoard.replaceChildren(makeTextElement("li", "empty", "Try Refresh, or check the Supabase connection."));
-      return;
-    }
-
-    if (response.error) {
-      boardStatus.textContent = "We couldn't load the event board.";
-      eventBoard.replaceChildren(makeTextElement("li", "empty", "Try Refresh, or check the Supabase connection."));
-      return;
-    }
-
-    events = Array.isArray(response.data) ? response.data : [];
-    boardStatus.textContent = events.length === 1 ? "1 event" : `${events.length} events`;
-    renderEvents();
-  }
-
-  function setModeratorResult(status, message) {
-    moderatorResult.className = `result ${status}`;
-    moderatorResult.hidden = false;
-    moderatorResultMessage.textContent = message || "";
-  }
-
-  function clearModeratorResult() {
-    moderatorResult.hidden = true;
-    moderatorResultMessage.textContent = "";
-  }
-
-  async function loadWaitingEvents() {
-    if (!supabaseClient || !currentUser) return;
-
-    waitingStatus.textContent = "Loading waiting posts…";
-    let response;
-    try {
-      response = await supabaseClient
-        .from("events")
-        .select(moderatorColumns)
-        .eq("status", "waiting")
-        .order("created_at", { ascending: false });
-    } catch (error) {
-      waitingStatus.textContent = "We couldn't load waiting posts.";
-      waitingBoard.replaceChildren(makeTextElement("li", "empty", "Try again, or check the Supabase connection."));
-      return;
-    }
-
-    if (response.error) {
-      waitingStatus.textContent = "We couldn't load waiting posts.";
-      waitingBoard.replaceChildren(makeTextElement("li", "empty", "Try again, or check the Supabase connection."));
-      return;
-    }
-
-    const waitingEvents = Array.isArray(response.data) ? response.data : [];
-    waitingStatus.textContent = waitingEvents.length === 1 ? "1 post waiting" : `${waitingEvents.length} posts waiting`;
-    waitingBoard.replaceChildren();
-    if (waitingEvents.length === 0) {
-      waitingBoard.appendChild(makeTextElement("li", "empty", "No posts are waiting for review."));
-      return;
-    }
-    waitingEvents.forEach((event) => waitingBoard.appendChild(makeEventCard(event, true)));
-  }
-
-  async function setModeratorUser(user) {
-    currentUser = user;
-    const signedIn = Boolean(user);
-    moderatorSignedOut.hidden = signedIn;
-    moderatorSignedIn.hidden = !signedIn;
-
-    if (!signedIn) {
-      moderatorStatus.textContent = "";
-      waitingStatus.textContent = "Sign in to see waiting posts.";
-      waitingBoard.replaceChildren();
-      return;
-    }
-
-    moderatorStatus.textContent = `Signed in as ${user.email || "moderator"}.`;
-    clearModeratorResult();
-    await loadWaitingEvents();
-  }
-
-  async function signIn(event) {
-    event.preventDefault();
-    if (!supabaseClient) {
-      setModeratorResult("error", "The Supabase connection is not configured.");
-      return;
-    }
-
-    signInButton.disabled = true;
-    signInButton.textContent = "Signing in…";
-    clearModeratorResult();
-    try {
-      const response = await supabaseClient.auth.signInWithPassword({
-        email: moderatorEmail.value.trim(),
-        password: moderatorPassword.value,
+    var groups = {}, order = [];
+    shown.forEach(function (ev) { var k = ev.event_date || ""; if (!groups[k]) { groups[k] = []; order.push(k); } groups[k].push(ev); });
+    order.forEach(function (k) {
+      var day = el("section", "day"), head = el("div", "day-head");
+      head.appendChild(el("h2", null, fmtDayHead(k)));
+      head.appendChild(el("span", "n", groups[k].length + (groups[k].length === 1 ? " event" : " events")));
+      day.appendChild(head);
+      groups[k].forEach(function (ev) {
+        var c = card(ev);
+        c.style.setProperty("--i", String(i++));
+        if (seen && !seen[ev.id] && isRecent(ev.created_at)) c.classList.add("new");
+        day.appendChild(c);
       });
-
-      if (response.error) {
-        setModeratorResult("error", "Sign-in failed. Check the email and password.");
-      } else {
-        moderatorPanel.open = true;
-        moderatorPassword.value = "";
-      }
-    } catch (error) {
-      setModeratorResult("error", "Sign-in failed. Check your connection and try again.");
-    } finally {
-      signInButton.disabled = false;
-      signInButton.textContent = "Sign in";
-    }
+      list.appendChild(day);
+    });
+    $("statCount").textContent = String(events.length);
+    $("statWeek").textContent = String(events.filter(function (ev) { return isThisWeek(ev.event_date); }).length);
+    $("statFood").textContent = String(events.filter(function (ev) { return ev.free_food; }).length);
+    $("boardStatus").textContent = shown.length ? shown.length + (shown.length === 1 ? " event" : " events") + (filter !== "all" ? " shown" : "") : "";
   }
-
-  async function signOut() {
-    if (!supabaseClient) return;
-    signOutButton.disabled = true;
-    try {
-      const response = await supabaseClient.auth.signOut();
-      if (response.error) setModeratorResult("error", "Sign-out failed. Try again.");
-    } catch (error) {
-      setModeratorResult("error", "Sign-out failed. Check your connection and try again.");
-    } finally {
-      signOutButton.disabled = false;
-    }
+  function loadBoard(quiet) {
+    if (!quiet) $("boardStatus").textContent = "Loading…";
+    $("live").classList.add("busy");
+    return db.from("events").select(PUBLIC_COLUMNS).eq("status", "published")
+      .order("event_date", { ascending: true, nullsFirst: false })
+      .order("start_time", { ascending: true, nullsFirst: false })
+      .then(function (res) {
+        $("live").classList.remove("busy");
+        if (res.error) { $("boardStatus").textContent = "Couldn't load events: " + res.error.message; return; }
+        var changed = res.data.length !== events.length || res.data.some(function (ev, k) { return !events[k] || events[k].id !== ev.id; });
+        if (!changed && quiet) return;
+        var before = seen; seen = {};
+        res.data.forEach(function (ev) { seen[ev.id] = true; });
+        var fresh = res.data.filter(function (ev) { return before && !before[ev.id] && isRecent(ev.created_at); }).length;
+        events = res.data;
+        var keep = seen; seen = before; renderBoard(); seen = keep;
+        if (fresh) toast(fresh === 1 ? "A new event just arrived" : fresh + " new events just arrived");
+      });
   }
+  $("refreshBtn").addEventListener("click", function () { loadBoard(false); });
+  qa("#filters .chip").forEach(function (b) {
+    b.addEventListener("click", function () {
+      filter = b.getAttribute("data-filter");
+      qa("#filters .chip").forEach(function (o) { o.setAttribute("aria-pressed", String(o === b)); });
+      renderBoard();
+    });
+  });
+  setInterval(function () { if (document.visibilityState === "visible" && !openId) loadBoard(true); }, REFRESH_MS);
+  document.addEventListener("visibilitychange", function () { if (document.visibilityState === "visible") loadBoard(true); });
 
-  async function reviewEvent(eventId, nextStatus) {
-    if (!supabaseClient || !currentUser) return;
-
-    const action = nextStatus === "published" ? "approve" : "reject";
-    setModeratorResult("waiting", `${action === "approve" ? "Approving" : "Rejecting"} post…`);
-    const response = await supabaseClient
-      .from("events")
-      .update({
-        status: nextStatus,
-        status_reason: nextStatus === "published" ? "Approved by moderator." : "Rejected by moderator.",
-        reviewed_at: new Date().toISOString(),
-        reviewed_by: currentUser.id,
+  /* ---------- posting by hand: send it to the AI agent ---------- */
+  var LABELS = { published: "Published", waiting: "Waiting for a moderator", rejected: "Not posted", duplicate: "Already posted", error: "Something went wrong" };
+  function showResult(data) {
+    var box = $("postResult"), kind = data.ok ? data.status : "error";
+    box.hidden = false;
+    box.className = "result " + kind;
+    box.textContent = "";
+    box.appendChild(el("p", "result-label", LABELS[kind] || kind));
+    box.appendChild(el("p", null, data.message || ""));
+    if (data.reasons && data.reasons.length) {
+      var ul = el("ul", "reasons");
+      data.reasons.forEach(function (r) { ul.appendChild(el("li", null, r)); });
+      box.appendChild(ul);
+    }
+    if (data.event && data.status !== "rejected") box.appendChild(card(data.event));
+    var looked = memo(data.looked_at);
+    if (looked) box.appendChild(looked);
+  }
+  $("postForm").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var form = $("postForm"), btn = $("postBtn");
+    var photo = $("flyer").files[0];
+    if (photo && photo.size > 5 * 1024 * 1024) { showResult({ ok: false, message: "The photo must be 5 MB or smaller." }); return; }
+    btn.disabled = true;
+    btn.textContent = "The agent is reading it…";
+    // The publishable key goes on the apikey header only (never as an Authorization bearer token).
+    fetch(AGENT_URL, { method: "POST", headers: { apikey: cfg.publishableKey }, body: new FormData(form) })
+      .then(function (r) {
+        return r.json().catch(function () { return { ok: false, message: "The agent didn't answer (" + r.status + "). Is the function deployed?" }; });
       })
-      .eq("id", eventId);
+      .then(function (data) {
+        showResult(data);
+        if (data.ok) { form.reset(); loadBoard(true); }
+      })
+      .catch(function () { showResult({ ok: false, message: "Couldn't reach the agent. Check your internet connection and the Project URL in config.js." }); })
+      .then(function () { btn.disabled = false; btn.textContent = "Post it"; });
+  });
 
-    if (response.error) {
-      setModeratorResult("error", "That review could not be saved. Try again.");
-      return;
-    }
+  // Say who drafts the cards (a quick check that doesn't call the AI).
+  fetch(AGENT_URL, { headers: { apikey: cfg.publishableKey } })
+    .then(function (r) { return r.json(); })
+    .then(function (d) { if (d && d.ai) $("aiNote").textContent = "Event cards are drafted by an AI agent, " + d.ai + ", and checked against the posting rules."; })
+    .catch(function () { /* the website still works without this note */ });
 
-    setModeratorResult("published", nextStatus === "published" ? "The post is now published." : "The post was rejected.");
-    await Promise.all([loadWaitingEvents(), loadEvents()]);
-  }
-
-  async function initAuth() {
-    if (!supabaseClient) {
-      setModeratorResult("error", "The Supabase connection is not configured.");
-      return;
-    }
-
-    let sessionResponse;
-    try {
-      sessionResponse = await supabaseClient.auth.getSession();
-    } catch (error) {
-      setModeratorResult("error", "The sign-in service could not be reached.");
-      return;
-    }
-    await setModeratorUser(sessionResponse.data.session ? sessionResponse.data.session.user : null);
-    supabaseClient.auth.onAuthStateChange(function (_event, session) {
-      window.setTimeout(function () {
-        setModeratorUser(session ? session.user : null);
-      }, 0);
+  /* ---------- moderator: sign-in, the review queue, and the tools ---------- */
+  var session = null;
+  $("openMod").addEventListener("click", function () { openDrawer("modDrawer"); });
+  qa(".tab").forEach(function (t) {
+    t.addEventListener("click", function () {
+      qa(".tab").forEach(function (o) { o.setAttribute("aria-selected", String(o === t)); });
+      qa(".tabpanel").forEach(function (p) { p.hidden = p.getAttribute("data-panel") !== t.getAttribute("data-tab"); });
     });
+  });
+  function renderMod() {
+    $("signInForm").hidden = Boolean(session);
+    $("modArea").hidden = !session;
+    if (session) {
+      $("modWho").textContent = session.user.email;
+      loadWaiting();
+      loadLessons();
+    }
   }
-
-  async function submitAnnouncement(event) {
-    event.preventDefault();
-    const announcement = announcementInput.value.trim();
-    const flyer = flyerInput.files && flyerInput.files[0];
-    if (!announcement) {
-      setResult("error", "Add an announcement before posting.", []);
-      announcementInput.focus();
-      return;
-    }
-    if (flyer && !allowedFlyerTypes.has(flyer.type)) {
-      setResult("error", "The flyer must be a JPG or PNG image.", []);
-      flyerInput.focus();
-      return;
-    }
-    if (flyer && flyer.size > maxFlyerBytes) {
-      setResult("error", "The flyer must be 5 MB or smaller.", []);
-      flyerInput.focus();
-      return;
-    }
-
-    submitButton.disabled = true;
-    submitButton.textContent = "Checking announcement…";
-
-    const formData = new FormData();
-    formData.append("announcement", announcement);
-    if (flyer) formData.append("flyer", flyer);
-
-    try {
-      const response = await fetch(agentUrl, {
-        method: "POST",
-        headers: { apikey: publishableKey },
-        body: formData,
+  function review(ev, status) {
+    var stamp = { reviewed_at: new Date().toISOString(), reviewed_by: session.user.email };
+    db.from("events")
+      .update({ status: status, reviewed_at: stamp.reviewed_at, reviewed_by: stamp.reviewed_by })
+      .eq("id", ev.id)
+      .then(function (res) {
+        if (res.error) { $("waitingStatus").textContent = "Couldn't save that: " + res.error.message; return; }
+        // Approving an update retires the post it replaces, so the website never shows both.
+        if (status === "published" && ev.updates_id) {
+          return db.from("events")
+            .update({ status: "replaced", status_reason: "Replaced by a newer post the moderator approved.", reviewed_at: stamp.reviewed_at, reviewed_by: stamp.reviewed_by })
+            .eq("id", ev.updates_id).in("status", ["published", "waiting"]);
+        }
+      })
+      .then(function () {
+        toast(status === "published" ? "Approved and posted" : "Rejected");
+        loadWaiting();
+        loadBoard(true);
       });
-      const body = await response.json().catch(() => ({}));
-      const status = body.ok ? body.status : "error";
-      setResult(status, body.message || "The agent did not return a message.", body.reasons);
-      if (body.ok && body.status === "published") {
-        announcementInput.value = "";
-        flyerInput.value = "";
-        await loadEvents();
-      }
-    } catch (error) {
-      setResult("error", "The event agent could not be reached. Check your connection and try again.", []);
-    } finally {
-      submitButton.disabled = false;
-      submitButton.textContent = "Post announcement";
-    }
   }
+  function loadWaiting() {
+    $("waitingStatus").textContent = "Loading…";
+    db.from("events").select("*").eq("status", "waiting").order("created_at", { ascending: true })
+      .then(function (res) {
+        var list = $("waitingList");
+        list.textContent = "";
+        if (res.error) { $("waitingStatus").textContent = "Couldn't load waiting posts: " + res.error.message; return; }
+        res.data.forEach(function (ev) {
+          var box = el("div", "review");
+          if (ev.status_reason) box.appendChild(el("p", "why", "Why it's waiting: " + ev.status_reason));
+          box.appendChild(el("p", "original", "Original post: " + ev.announcement));
+          var looked = memo(ev.agent_notes);
+          if (looked) box.appendChild(looked);
+          // Teach the agent while the post is fresh: the lesson is saved with the decision.
+          var teachLabel = el("label", "teach-inline");
+          teachLabel.appendChild(el("span", null, "Teach the agent something (optional)"));
+          var teachInput = el("input");
+          teachInput.type = "text"; teachInput.maxLength = 300;
+          teachInput.placeholder = "One sentence the agent should remember next time.";
+          teachLabel.appendChild(teachInput);
+          box.appendChild(teachLabel);
+          var approve = el("button", null, "Approve");
+          var reject = el("button", "ghost", "Reject");
+          approve.type = reject.type = "button";
+          function decideThen(status) {
+            var lesson = teachInput.value.trim();
+            if (lesson) { saveLesson(lesson, ev.id).then(function () { review(ev, status); }); return; }
+            review(ev, status);
+          }
+          approve.addEventListener("click", function () { decideThen("published"); });
+          reject.addEventListener("click", function () { decideThen("rejected"); });
+          var row = el("div", "actions-row");
+          row.appendChild(approve);
+          row.appendChild(reject);
+          box.appendChild(row);
+          var li = el("li");
+          li.appendChild(card(ev, box));
+          list.appendChild(li);
+        });
+        $("waitingCount").textContent = String(res.data.length);
+        $("waitingStatus").textContent = res.data.length ? res.data.length + " waiting" : "Nothing is waiting. Nice work.";
+      });
+  }
+  $("signInForm").addEventListener("submit", function (e) {
+    e.preventDefault();
+    $("signInMsg").textContent = "Signing in…";
+    db.auth.signInWithPassword({ email: $("modEmail").value.trim(), password: $("modPassword").value })
+      .then(function (res) {
+        $("modPassword").value = "";
+        // Show Supabase's own reason, such as "Invalid login credentials", so problems are easy to spot.
+        $("signInMsg").textContent = res.error ? "Sign-in didn't work: " + res.error.message : "";
+      })
+      .catch(function () { $("signInMsg").textContent = "Supabase couldn't be reached. Check your internet connection and try again."; });
+  });
+  $("signOutBtn").addEventListener("click", function () { db.auth.signOut(); });
+  db.auth.onAuthStateChange(function (_event, s) { session = s; renderMod(); });
+  db.auth.getSession().then(function (res) { session = res.data.session; renderMod(); });
 
-  form.addEventListener("submit", submitAnnouncement);
-  refreshButton.addEventListener("click", loadEvents);
-  allEventsFilter.addEventListener("click", function () { setFilter(false); });
-  freeFoodFilter.addEventListener("click", function () { setFilter(true); });
-  signInForm.addEventListener("submit", signIn);
-  signOutButton.addEventListener("click", signOut);
-  loadEvents();
-  initAuth();
+  // Tools: clear the board. Every post goes; the club list and the lessons stay.
+  $("clearBtn").addEventListener("click", function () {
+    if (!window.confirm("Delete every post on the board? This can't be undone. The club list and the lessons stay.")) return;
+    $("toolsMsg").textContent = "Clearing…";
+    db.from("events").delete().not("id", "is", null).then(function (res) {
+      if (res.error) { $("toolsMsg").textContent = "Couldn't clear the board: " + res.error.message; return; }
+      $("toolsMsg").textContent = "The board is empty.";
+      toast("Board cleared");
+      loadWaiting(); loadBoard(true);
+    });
+  });
+
+  /* ---------- lessons: what moderators teach the agent ---------- */
+  function saveLesson(text, fromPost) {
+    return db.from("lessons").insert({ lesson: text.slice(0, 300), created_by: session.user.email, from_post: fromPost || null })
+      .then(function (res) {
+        $("teachMsg").textContent = res.error ? "Couldn't save the lesson: " + res.error.message : "Saved. The agent reads it with the next post.";
+        if (!res.error) toast("Lesson saved");
+        loadLessons();
+      });
+  }
+  function loadLessons() {
+    $("lessonsStatus").textContent = "Loading…";
+    db.from("lessons").select("*").order("created_at", { ascending: true })
+      .then(function (res) {
+        var list = $("lessonsList");
+        list.textContent = "";
+        if (res.error) { $("lessonsStatus").textContent = "Couldn't load the lessons: " + res.error.message; return; }
+        res.data.forEach(function (l) {
+          var li = el("li", "lesson" + (l.active ? "" : " off"));
+          var sw = el("label", "switch");
+          var box = el("input");
+          box.type = "checkbox"; box.checked = l.active;
+          box.setAttribute("aria-label", (l.active ? "Switch off: " : "Switch on: ") + l.lesson);
+          box.addEventListener("change", function () {
+            db.from("lessons").update({ active: box.checked }).eq("id", l.id).then(function (r) {
+              if (r.error) { $("lessonsStatus").textContent = "Couldn't change that: " + r.error.message; box.checked = !box.checked; return; }
+              toast(box.checked ? "Lesson on" : "Lesson off: the agent forgets it");
+              loadLessons();
+            });
+          });
+          sw.appendChild(box);
+          sw.appendChild(el("span", "knob"));
+          li.appendChild(sw);
+          var body = el("div", "lesson-body");
+          body.appendChild(el("p", "lesson-text", l.lesson));
+          body.appendChild(el("p", "lesson-meta", (l.active ? "On" : "Off, the agent no longer reads it") + (l.created_by ? " · by " + l.created_by : "") + " · " + new Date(l.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })));
+          li.appendChild(body);
+          list.appendChild(li);
+        });
+        var on = res.data.filter(function (l) { return l.active; }).length;
+        $("lessonsCount").textContent = String(on);
+        $("lessonsStatus").textContent = res.data.length ? on + " of " + res.data.length + " lesson" + (res.data.length === 1 ? "" : "s") + " switched on" : "No lessons yet. The agent follows only the posting rules.";
+      });
+  }
+  $("teachForm").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var text = $("lessonText").value.trim();
+    if (!text) return;
+    saveLesson(text, null).then(function () { $("lessonText").value = ""; });
+  });
+
+  loadBoard(false);
 })();
