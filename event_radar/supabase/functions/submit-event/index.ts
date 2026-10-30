@@ -128,6 +128,9 @@ type FlyerInput = {
 type Submission = {
   announcement: string;
   flyer: FlyerInput | null;
+  source: string;
+  sourceId: string;
+  sourceName: string;
 };
 
 function jsonResponse(body: Record<string, unknown>, status = 200): Response {
@@ -296,9 +299,13 @@ async function getSubmission(request: Request): Promise<Submission> {
 
   if (contentType.includes("application/json")) {
     const body = await request.json().catch(() => null);
+    const record = body && typeof body === "object" ? body as Record<string, unknown> : {};
     return {
-      announcement: textValue(body && typeof body === "object" ? (body as Record<string, unknown>).announcement : ""),
+      announcement: textValue(record.announcement),
       flyer: null,
+      source: textValue(record.source),
+      sourceId: textValue(record.source_id),
+      sourceName: textValue(record.source_name),
     };
   }
 
@@ -322,7 +329,13 @@ async function getSubmission(request: Request): Promise<Submission> {
     };
   }
 
-  return { announcement: textValue(form.get("announcement")), flyer };
+  return {
+    announcement: textValue(form.get("announcement")),
+    flyer,
+    source: textValue(form.get("source")),
+    sourceId: textValue(form.get("source_id")),
+    sourceName: textValue(form.get("source_name")),
+  };
 }
 
 async function callOpenAI(announcement: string, today: string, apiKey: string, flyer: FlyerInput | null): Promise<EventCard> {
@@ -431,6 +444,32 @@ Deno.serve(async (request: Request) => {
   const supabase = createClient(supabaseUrl, supabaseKey, {
     auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
   });
+
+  if (submission.source && submission.sourceId) {
+    const { data: alreadyRead, error: alreadyReadError } = await supabase
+      .from("events")
+      .select("id")
+      .eq("source", submission.source)
+      .eq("source_id", submission.sourceId)
+      .limit(1)
+      .maybeSingle();
+
+    if (alreadyReadError) {
+      console.error("Could not check whether the source message was already read", alreadyReadError.message);
+      return jsonResponse({ ok: false, message: "The message history could not be checked." }, 500);
+    }
+    if (alreadyRead) {
+      return jsonResponse({
+        ok: true,
+        status: "duplicate",
+        already_read: true,
+        message: "This chat message was already read.",
+        reasons: ["The chat reader has already made a decision for this message."],
+        event: null,
+      });
+    }
+  }
+
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const { count, error: countError } = await supabase
     .from("events")
@@ -484,12 +523,15 @@ Deno.serve(async (request: Request) => {
     dedupe_key: dedupeKey,
     ai_model: OPENAI_MODEL,
     flyer_url: "",
+    source: submission.source,
+    source_id: submission.sourceId,
+    source_name: submission.sourceName,
   };
 
   const { data: event, error: insertError } = await supabase
     .from("events")
     .insert(row)
-    .select("id, created_at, status, title, club, event_date, start_time, end_time, place_name, place_detail, cost, free_food, summary, flyer_url")
+    .select("id, created_at, status, title, club, event_date, start_time, end_time, place_name, place_detail, cost, free_food, summary, flyer_url, source, source_id, source_name")
     .single();
 
   if (insertError) {
@@ -497,6 +539,7 @@ Deno.serve(async (request: Request) => {
       return jsonResponse({
         ok: true,
         status: "duplicate",
+        already_read: Boolean(submission.source && submission.sourceId),
         message: "This event is already posted.",
         reasons: ["A live post already exists for this date, start time, and place."],
         event: null,
@@ -526,7 +569,7 @@ Deno.serve(async (request: Request) => {
       .from("events")
       .update({ flyer_url: flyerUrl })
       .eq("id", event.id)
-      .select("id, created_at, status, title, club, event_date, start_time, end_time, place_name, place_detail, cost, free_food, summary, flyer_url")
+      .select("id, created_at, status, title, club, event_date, start_time, end_time, place_name, place_detail, cost, free_food, summary, flyer_url, source, source_id, source_name")
       .single();
 
     if (flyerUpdateError) {
